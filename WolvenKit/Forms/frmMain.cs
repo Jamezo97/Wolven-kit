@@ -834,7 +834,7 @@ namespace WolvenKit
                     {
                         var rigDoc = new frmCR2WDocument();
                         // HACK: Hacky (shit) solution for automatic path finding
-                        var basePath = doc.File.FileName.Split(new string[] { "characters" }, StringSplitOptions.None)[0];
+                        /*var basePath = doc.File.FileName.Split(new string[] { "characters" }, StringSplitOptions.None)[0];
                         var modelName = Path.GetFileName(doc.File.FileName).Split('_', '.')[3];
                         var rigPath = $@"{basePath}characters\base_entities\{modelName}_base\{modelName}_base.w2rig";
                         if (File.Exists(rigPath))
@@ -842,30 +842,34 @@ namespace WolvenKit
                             rigDoc.LoadFile(rigPath);
                         }
                         else
+                        {*/
+                        bool rigSelected = false;
+                        if (MessageBox.Show("Could not find .w2rig for model!\nWould you like to search for the rig manually?", "Rig not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
                         {
-                            if (MessageBox.Show("Could not find .w2rig for model!\nWould you like to search for the rig manually?", "Rig not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                            var ofd = new OpenFileDialog();
+                            if (ofd.ShowDialog() == DialogResult.OK)
                             {
-                                var ofd = new OpenFileDialog();
-                                if (ofd.ShowDialog() == DialogResult.OK)
-                                    rigDoc.LoadFile(ofd.FileName);
+                                rigDoc.LoadFile(ofd.FileName);
+                                rigSelected = true;
                             }
-                         }
+                        }
+                         //}
 
                         var animDoc = new frmCR2WDocument();
-                        var animPath = $@"{basePath}animations\animals\chicken\chicken_swarm_animation.w2anims";
+                        /*var animPath = $@"{basePath}animations\animals\chicken\chicken_swarm_animation.w2anims";
                         if (File.Exists(animPath))
                         {
                             animDoc.LoadFile(animPath);
                         }
                         else
+                        {*/
+                        if (rigSelected && MessageBox.Show("Could not find .w2anims for model!\nWould you like to search for the animation manually (highly experimental)?", "Animation not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
                         {
-                            if (MessageBox.Show("Could not find .w2anims for model!\nWould you like to search for the animation manually (highly experimental)?", "Animation not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                            {
-                                var ofd = new OpenFileDialog();
-                                if (ofd.ShowDialog() == DialogResult.OK)
-                                    rigDoc.LoadFile(ofd.FileName);
-                            }
+                            var ofd = new OpenFileDialog();
+                            if (ofd.ShowDialog() == DialogResult.OK)
+                                animDoc.LoadFile(ofd.FileName);
                         }
+                        //}
 
                         doc.RenderViewer = new Render.frmRender
                         {
