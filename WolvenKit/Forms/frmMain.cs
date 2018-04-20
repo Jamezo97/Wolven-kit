@@ -912,8 +912,12 @@ namespace WolvenKit
 
         public CR2WFile LoadDocumentAndGetFile(string filename)
         {
+            foreach (var t in OpenDocuments.Where(t => t.FileName == filename))
+                return t.File;
+            var activedoc = OpenDocuments.FirstOrDefault(d => d.IsActivated);
             var doc = LoadDocument(filename);
-            return doc.File;
+            activedoc.Activate();
+            return doc != null ? doc.File : null;
         }
         #endregion //Methods
 
