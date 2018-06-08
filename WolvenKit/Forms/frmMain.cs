@@ -88,15 +88,21 @@ namespace WolvenKit
             MainController.Get().QueueLog("Enviroment loaded!");
         }
 
+        private delegate void strDelegate(string t);
+
         #region Methods
         private void MainControllerUpdated(object sender, System.ComponentModel.PropertyChangedEventArgs e)
         {
             if (e.PropertyName == "ProjectStatus")
-                statusLBL.Text = ((MainController)sender).ProjectStatus;
+                Invoke(new strDelegate(SetStatusLabelText), ((MainController)sender).ProjectStatus);
             if(e.PropertyName == "LogMessage")
                 AddOutput(((MainController)sender).LogMessage.Key + "\n", ((MainController)sender).LogMessage.Value);
         }
 
+        private void SetStatusLabelText(string text)
+        {
+            statusLBL.Text = text;
+        }
 
 
         private void UpdateTitle()
@@ -655,18 +661,21 @@ namespace WolvenKit
                 frm.WindowState = FormWindowState.Normal;
                 return;
             }
+
+            var MC = MainController.Get();
+
             var explorer = new frmAssetBrowser(loadmods ? 
                 new List<IWitcherArchive>
                 {
-                    MainController.Get().ModBundleManager, 
-                    MainController.Get().ModSoundManager, 
-                    MainController.Get().ModTextureManager
+                    MC.ModBundleManager,
+                    MC.ModSoundManager,
+                    MC.ModTextureManager
                 } : 
                 new List<IWitcherArchive>
                 {
-                    MainController.Get().BundleManager, 
-                    MainController.Get().SoundManager, 
-                    MainController.Get().TextureManager
+                    MC.BundleManager,
+                    MC.SoundManager,
+                    MC.TextureManager
                 });
             explorer.RequestFileAdd += Assetbrowser_FileAdd;
             explorer.OpenPath(browseToPath);
