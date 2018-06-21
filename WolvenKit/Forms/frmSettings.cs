@@ -143,7 +143,7 @@ namespace WolvenKit
                         ?.GetValue("InstallLocation");
                     if (programName != null && installLocation != null)
                     {
-                        if (programName.ToString().Contains("Witcher 3 Mod Tools"))
+                        if (programName.ToString().Contains("Witcher 3 Mod Tools") && Directory.Exists(installLocation.ToString()))
                         {
                             wcc = Directory.GetFiles(installLocation.ToString(), "wcc_lite.exe",
                                 SearchOption.AllDirectories).First();
