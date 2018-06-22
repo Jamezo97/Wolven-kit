@@ -1448,11 +1448,22 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                     }
                 }
 
+                CleanupDirectory();
+
+                List<Task> concurrentTasks = new List<Task>();
+
                 //Handle bundle packing.
                 if (packsettings.PackBundles)
                 {
-                    await PackBundles();
+                    concurrentTasks.Add(PackModBundles());
+                    concurrentTasks.Add(PackDLCBundles());
                 }
+
+                foreach(Task tsk in concurrentTasks)
+                {
+                    await tsk;
+                }
+                concurrentTasks.Clear();
 
                 //Handle texture caching
                 if (packsettings.GenTexCache)
@@ -1464,8 +1475,15 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 //Handle metadata generation.
                 if (packsettings.GenMetadata)
                 {
-                    await CreateModMetaData();
+                    concurrentTasks.Add(CreateModMetaData());
+                    concurrentTasks.Add(CreateDLCMetaData());
                 }
+
+                foreach (Task tsk in concurrentTasks)
+                {
+                    await tsk;
+                }
+                concurrentTasks.Clear();
 
                 //Handle sound caching
                 if (packsettings.Sound)
@@ -1519,15 +1537,12 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             }           
         }
 
-        /// <summary>
-        /// Packs the bundles for the DLC and the Mod. Always call this first since this cleans the direactories.
-        /// </summary>
-        private async Task PackBundles()
+        private void CleanupDirectory()
         {
             var config = MainController.Get().Configuration;
-            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
             var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
             var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+
             #region Directory cleanup
             if (!Directory.Exists(modpackDir))
             {
@@ -1562,6 +1577,18 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 }
             }
             #endregion
+        }
+
+        /// <summary>
+        /// Packs the bundles for the DLC and the Mod. Always call this first since this cleans the direactories.
+        /// </summary>
+        private async Task PackModBundles()
+        {
+            var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
+            var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+            
             #region Mod Bundle Packing
             try
             {
@@ -1604,10 +1631,22 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
             }
             #endregion
+        }
+
+        /// <summary>
+        /// Packs the bundles for the DLC and the Mod. Always call this first since this cleans the direactories.
+        /// </summary>
+        private async Task PackDLCBundles()
+        {
+            var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
+            var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+
             #region DLC Bundle Packing
             try
             {
-                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new Bundle().TypeName),"*",SearchOption.AllDirectories).Any())
+                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new Bundle().TypeName), "*", SearchOption.AllDirectories).Any())
                 {
                     MainController.Get().ProjectStatus = "Packing dlc bundles";
                     proc.Arguments = $"pack -dir={Path.Combine(ActiveMod.DlcDirectory, new Bundle().TypeName)} -outdir={DlcpackDir}";
@@ -1644,7 +1683,58 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             catch (Exception ex)
             {
                 AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
-            }            
+            }
+            #endregion
+        }
+
+        private async Task CreateDLCMetaData()
+        {
+            var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
+            var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+            #region DLC metadata Packing
+            try
+            {
+                //We only pack this if we have bundles.
+                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new Bundle().TypeName), "*", SearchOption.AllDirectories).Any())
+                {
+                    MainController.Get().ProjectStatus = "Packing DLC metadata";
+                    proc.Arguments = $"metadatastore -path={DlcpackDir}";
+                    proc.UseShellExecute = false;
+                    proc.RedirectStandardOutput = true;
+                    proc.WindowStyle = ProcessWindowStyle.Hidden;
+                    proc.CreateNoWindow = true;
+
+                    AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
+
+                    using (var process = Process.Start(proc))
+                    {
+                        using (var reader = process.StandardOutput)
+                        {
+                            while (true)
+                            {
+                                var result = await reader.ReadLineAsync();
+
+                                AddOutput(result + "\n", frmOutput.Logtype.Wcc);
+
+                                Application.DoEvents();
+
+                                if (reader.EndOfStream)
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (DirectoryNotFoundException)
+            {
+                AddOutput("DLC wasn't bundled. Metadata won't be generated. \n", frmOutput.Logtype.Important);
+            }
+            catch (Exception ex)
+            {
+                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
+            }
             #endregion
         }
 
@@ -1691,49 +1781,6 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             catch (DirectoryNotFoundException)
             {
                 AddOutput("Mod wasn't bundled. Metadata won't be generated. \n", frmOutput.Logtype.Important);
-            }
-            catch (Exception ex)
-            {
-                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
-            }
-            #endregion
-            #region DLC metadata Packing
-            try
-            {
-                //We only pack this if we have bundles.
-                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new Bundle().TypeName), "*", SearchOption.AllDirectories).Any())
-                {
-                    MainController.Get().ProjectStatus = "Packing DLC metadata";
-                    proc.Arguments = $"metadatastore -path={DlcpackDir}";
-                    proc.UseShellExecute = false;
-                    proc.RedirectStandardOutput = true;
-                    proc.WindowStyle = ProcessWindowStyle.Hidden;
-                    proc.CreateNoWindow = true;
-
-                    AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
-
-                    using (var process = Process.Start(proc))
-                    {
-                        using (var reader = process.StandardOutput)
-                        {
-                            while (true)
-                            {
-                                var result = await reader.ReadLineAsync();
-
-                                AddOutput(result + "\n", frmOutput.Logtype.Wcc);
-
-                                Application.DoEvents();
-
-                                if (reader.EndOfStream)
-                                    break;
-                            }
-                        }
-                    }
-                }
-            }
-            catch(DirectoryNotFoundException)
-            {
-                AddOutput("DLC wasn't bundled. Metadata won't be generated. \n", frmOutput.Logtype.Important);
             }
             catch (Exception ex)
             {
