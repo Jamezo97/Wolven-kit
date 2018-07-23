@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using System.Xml.Serialization;
+using AutoUpdaterDotNET;
+using Dfust.Hotkeys;
 using ICSharpCode.SharpZipLib.Core;
 using ICSharpCode.SharpZipLib.Zip;
 using Newtonsoft.Json;
@@ -23,6 +25,7 @@ using WolvenKit.Common;
 using WolvenKit.Cache;
 using WolvenKit.Bundles;
 using WolvenKit.Forms;
+using Enums = Dfust.Hotkeys.Enums;
 
 namespace WolvenKit
 {
@@ -47,6 +50,8 @@ namespace WolvenKit
         #endregion
         private readonly string BaseTitle = "Wolven kit";
         public static Task Packer;
+        private HotkeyCollection hotkeys;
+
         public W3Mod ActiveMod
         {
             get => MainController.Get().ActiveMod;
@@ -79,29 +84,88 @@ namespace WolvenKit
                 recentFilesToolStripMenuItem.Enabled = false;
             }
             #endregion
-            #region Initialize maincontroller with progressbar
-            CircularProgressBar.CircularProgressBar cb = new CircularProgressBar.CircularProgressBar();
-            cb.Text = "Loading enviroment!";
-            cb.Show();
-            Task.Factory.StartNew(() => MainController.Get().Initialize()); //Start the async task to load our stuff
-            #endregion
-            MainController.Get().QueueLog("Enviroment loaded!");
+            hotkeys = new HotkeyCollection(Enums.Scope.Application);
+            hotkeys.RegisterHotkey(Keys.Control | Keys.S, HKSave, "Save");
+            hotkeys.RegisterHotkey(Keys.Control | Keys.Shift | Keys.S, HKSaveAll , "SaveAll");
+            hotkeys.RegisterHotkey(Keys.F1, HKHelp, "Help");
+            hotkeys.RegisterHotkey(Keys.Control | Keys.C, HKCopy, "Copy");
+            hotkeys.RegisterHotkey(Keys.Control | Keys.V, HKPaste,"Paste");            
         }
 
         private delegate void strDelegate(string t);
 
+        private delegate void logDelegate(string t, frmOutput.Logtype type);
+
         #region Methods
+        /// <summary>
+        /// Occurs when something in the maincontroller is updated that is INotifyProeprtyChanged
+        /// Thread safe and always should be
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void MainControllerUpdated(object sender, System.ComponentModel.PropertyChangedEventArgs e)
         {
             if (e.PropertyName == "ProjectStatus")
                 Invoke(new strDelegate(SetStatusLabelText), ((MainController)sender).ProjectStatus);
-            if(e.PropertyName == "LogMessage")
-                AddOutput(((MainController)sender).LogMessage.Key + "\n", ((MainController)sender).LogMessage.Value);
+            if (e.PropertyName == "LogMessage")
+                Invoke(new logDelegate(AddOutput), ((MainController) sender).LogMessage.Key + "\n",
+                    ((MainController) sender).LogMessage.Value);
         }
 
         private void SetStatusLabelText(string text)
         {
             statusLBL.Text = text;
+        }
+
+        private void HKSave(HotKeyEventArgs e)
+        {
+            if(ActiveDocument != null)
+                saveFile(ActiveDocument);
+        }
+
+        private void HKSaveAll(HotKeyEventArgs e)
+        {
+            if(OpenDocuments != null && OpenDocuments.Count > 0)
+                saveAllFiles();
+        }
+
+        private void HKHelp(HotKeyEventArgs e)
+        {
+            Process.Start("https://github.com/Traderain/Wolven-kit/wiki");
+        }
+
+        private void HKCopy(HotKeyEventArgs e)
+        {
+            if (ActiveDocument != null)
+            {
+                if (ActiveDocument.chunkList.IsActivated)
+                {
+                    ActiveDocument.chunkList.CopyChunks();
+                    AddOutput("Selected chunk(s) copied!\n");
+                }
+                else if(ActiveDocument.propertyWindow.IsActivated)
+                {
+                    ActiveDocument.propertyWindow.copyVariable();
+                    AddOutput("Selected propertie(s) copied!\n");
+                }
+            }
+        }
+
+        private void HKPaste(HotKeyEventArgs e)
+        {
+            if (ActiveDocument != null)
+            {
+                if (ActiveDocument.chunkList.IsActivated)
+                {
+                    ActiveDocument.chunkList.PasteChunks();
+                    AddOutput("Copied chunk(s) pasted!\n");
+                }
+                else if(ActiveDocument.propertyWindow.IsActivated)
+                {
+                    ActiveDocument.propertyWindow.pasteVariable();
+                    AddOutput("Copied propertie(s) pasted!\n");
+                }
+            }
         }
 
 
@@ -139,6 +203,8 @@ namespace WolvenKit
         private void saveFile(frmCR2WDocument d)
         {
             d.SaveFile();
+            AddOutput(d.FileName + " saved!\n");
+            MainController.Get().ProjectStatus = "Saved";
         }
 
         private void btPack_Click(object sender, EventArgs e)
@@ -217,7 +283,6 @@ namespace WolvenKit
                                 }
                             }
                         }
-
                     }
                     //Delete the old install log. We will make a new one so this is not needed anymore.
                     File.Delete(ActiveMod.ProjectDirectory + "\\install_log.xml");
@@ -435,22 +500,6 @@ namespace WolvenKit
                         "Invalid path");
                     continue;
                 }
-                var bannednames = new[]
-                {
-                    "VGX",
-                    "E3",
-                    "RESHADE",
-                    "LIGHTING"
-                };
-                if (bannednames.Any(x => dlg.FileName.ToUpper().Contains(x)))
-                {
-                    MessageBox.Show(
-                        @"Illegal mod name!",
-                        "Invalid mod name");
-                    continue;
-                }
-
-
 
                 MainController.Get().Configuration.InitialModDirectory = Path.GetDirectoryName(dlg.FileName);
                 var modname = Path.GetFileNameWithoutExtension(dlg.FileName);
@@ -594,7 +643,7 @@ namespace WolvenKit
                 if (manager.Items.Any(x => x.Value.Any(y => y.Name == item.FullPath)))
                 {
                     var archives = manager.FileList.Where(x => x.Name == item.FullPath).Select(y => new KeyValuePair<string, IWitcherFile>(y.Bundle.FileName, y));
-                    var filename = Path.Combine(ActiveMod.FileDirectory, AddAsDLC ? "DLC" : "Mod", archives.First().Value.Bundle.TypeName, item.FullPath);
+                    var filename = Path.Combine(ActiveMod.FileDirectory, AddAsDLC ? Path.Combine("DLC",archives.First().Value.Bundle.TypeName,"dlc",ActiveMod.Name,item.FullPath) : Path.Combine("Mod",archives.First().Value.Bundle.TypeName,item.FullPath));
                     if (archives.Count() > 1)
                     {
 
@@ -646,7 +695,7 @@ namespace WolvenKit
         /// Opens the asset browser in the background
         /// </summary>
         /// <param name="loadmods">Load the mod files</param>
-        /// <param name="browseToPath">The path to browse tos</param>
+        /// <param name="browseToPath">The path to browse to</param>
         private void AddModFile(bool loadmods, string browseToPath = "")
         {
             if (ActiveMod == null)
@@ -811,49 +860,16 @@ namespace WolvenKit
                     }*/
                 case ".w2mesh":
                     {
-                        var rigDoc = new frmCR2WDocument();
-                        // HACK: Hacky (shit) solution for automatic path finding
-                        var basePath = doc.File.FileName.Split(new string[] { "characters" }, StringSplitOptions.None)[0];
-                        var modelName = Path.GetFileName(doc.File.FileName).Split('_', '.')[3];
-                        var rigPath = $@"{basePath}characters\base_entities\{modelName}_base\{modelName}_base.w2rig";
-                        if (File.Exists(rigPath))
+                        if (bool.Parse(renderW2meshToolStripMenuItem.Tag.ToString()))
                         {
-                            rigDoc.LoadFile(rigPath);
-                        }
-                        else
-                        {
-                            if (MessageBox.Show("Could not find .w2rig for model!\nWould you like to search for the rig manually?", "Rig not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                            doc.RenderViewer = new Render.frmRender
                             {
-                                var ofd = new OpenFileDialog();
-                                if (ofd.ShowDialog() == DialogResult.OK)
-                                    rigDoc.LoadFile(ofd.FileName);
-                            }
-                         }
-
-                        var animDoc = new frmCR2WDocument();
-                        var animPath = $@"{basePath}animations\animals\chicken\chicken_swarm_animation.w2anims";
-                        if (File.Exists(animPath))
-                        {
-                            animDoc.LoadFile(animPath);
+                                LoadDocument = LoadDocumentAndGetFile,
+                                MeshFile = doc.File,
+                                DockAreas = DockAreas.Document
+                            };
+                            doc.RenderViewer.Show(doc.FormPanel, DockState.Document);
                         }
-                        else
-                        {
-                            if (MessageBox.Show("Could not find .w2anims for model!\nWould you like to search for the animation manually (highly experimental)?", "Animation not found!", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                            {
-                                var ofd = new OpenFileDialog();
-                                if (ofd.ShowDialog() == DialogResult.OK)
-                                    rigDoc.LoadFile(ofd.FileName);
-                            }
-                        }
-
-                        doc.RenderViewer = new Render.frmRender
-                        {
-                            RigFile = rigDoc.File,
-                            AnimFile = animDoc.File,
-                            File = doc.File,
-                            DockAreas = DockAreas.Document
-                        };
-                        doc.RenderViewer.Show(doc.FormPanel, DockState.Document);
                         break;
                     }
                 default:
@@ -903,6 +919,108 @@ namespace WolvenKit
             AddOutput(output.ToString());
             return doc;
         }
+
+        public CR2WFile LoadDocumentAndGetFile(string filename)
+        {
+            foreach (var t in OpenDocuments.Where(t => t.FileName == filename))
+                return t.File;
+            var activedoc = OpenDocuments.FirstOrDefault(d => d.IsActivated);
+            var doc = LoadDocument(filename);
+            activedoc.Activate();
+            return doc != null ? doc.File : null;
+        }
+
+        async Task DumpFile(string folder, string outfolder)
+        {
+            var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            try
+            {
+                MainController.Get().ProjectStatus = "Dumping folder";
+                proc.Arguments = $"dumpfile -dir={folder} -out={outfolder}";
+                proc.UseShellExecute = false;
+                proc.RedirectStandardOutput = true;
+                proc.WindowStyle = ProcessWindowStyle.Hidden;
+                proc.CreateNoWindow = true;
+                AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
+
+                using (var process = Process.Start(proc))
+                {
+                    using (var reader = process.StandardOutput)
+                    {
+                        while (true)
+                        {
+                            var result = await reader.ReadLineAsync();
+
+                            AddOutput(result + "\n", frmOutput.Logtype.Wcc);
+
+                            Application.DoEvents();
+
+                            if (reader.EndOfStream)
+                                break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
+            }
+
+            MainController.Get().ProjectStatus = "File dumped succesfully!";
+
+        }
+
+        async Task ImportFile(string infile, string outfile)
+        {
+            var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            try
+            {
+                var importwdir = Path.Combine(Path.GetDirectoryName(MainController.Get().Configuration.WccLite), "WolvenKitWorkingDir");
+                if(Directory.Exists(importwdir))
+                    Directory.Delete(importwdir,true);
+                Directory.CreateDirectory(importwdir);
+                File.Copy(infile,Path.Combine(importwdir,Path.GetFileName(infile)));
+                MainController.Get().ProjectStatus = "Importing file";
+                proc.Arguments = $"import -depot=\"{importwdir}\" -file={Path.Combine(importwdir,Path.GetFileName(infile))} -out={outfile}";
+                proc.UseShellExecute = false;
+                proc.RedirectStandardOutput = true;
+                proc.WindowStyle = ProcessWindowStyle.Hidden;
+                proc.CreateNoWindow = true;
+                if (!Directory.Exists(Path.GetDirectoryName(outfile)))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(outfile));
+                }
+                AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
+
+                using (var process = Process.Start(proc))
+                {
+                    using (var reader = process.StandardOutput)
+                    {
+                        while (true)
+                        {
+                            var result = await reader.ReadLineAsync();
+
+                            AddOutput(result + "\n", frmOutput.Logtype.Wcc);
+
+                            Application.DoEvents();
+
+                            if (reader.EndOfStream)
+                                break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
+            }
+
+            MainController.Get().ProjectStatus = "File imported succesfully!";
+
+        }
+
         #endregion //Methods
 
         #region  Control events
@@ -911,6 +1029,74 @@ namespace WolvenKit
             if (sender is frmCR2WDocument)
             {
                 doc_Activated(sender, e);
+            }
+        }
+
+        private void fbxWithCollisionsToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            MessageBox.Show(@"For this to work make sure your model has either of both of these layers:
+_tri - trimesh
+_col - for simple stuff like boxes and spheres","Information about importing models",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            using (var of = new OpenFileDialog())
+            {
+                of.Title = "Please select your fbx file with _col or _tri layers";
+                of.Filter = "FBX files | *.fbx";
+                if (of.ShowDialog() == DialogResult.OK)
+                {
+                    using (var sf = new SaveFileDialog())
+                    {
+                        sf.Filter = "Witcher 3 mesh file | *.w2mesh";
+                        sf.Title = "Please specify a location to save the imported file";
+                        sf.InitialDirectory = MainController.Get().Configuration.InitialFileDirectory;
+                        if (sf.ShowDialog() == DialogResult.OK)
+                        {
+                            ImportFile(of.FileName, sf.FileName);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void dumpFileToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            MessageBox.Show(@"This will generate a file which will show what wcc_lite sees from a file. Please keep in mind this doesn't always work","Info",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            using (var of = new FolderBrowserDialog())
+            {
+                of.Description = "Select the folder to dump";
+                if (of.ShowDialog() == DialogResult.OK)
+                {
+                    using (var sf = new FolderBrowserDialog())
+                    {
+                        sf.Description = "Please specify a location to save the dumped file";
+                        if (sf.ShowDialog() == DialogResult.OK)
+                        {
+                            DumpFile(of.SelectedPath.EndsWith("\\") ? of.SelectedPath : of.SelectedPath + "\\",
+                                sf.SelectedPath.EndsWith("\\") ? sf.SelectedPath : sf.SelectedPath + "\\");
+                        }
+                    }
+                }
+            }
+        }
+
+        private void nvidiaClothFileToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            using (var of = new OpenFileDialog())
+            {
+                of.Title = "Please select your cloth file for importing";
+                of.Filter = "APB files | *.apb";
+                if (of.ShowDialog() == DialogResult.OK)
+                {
+                    using (var sf = new SaveFileDialog())
+                    {
+                        sf.Filter = "Witcher 3 cloth file | *.redcloth";
+                        sf.Title = "Please specify a location to save the imported file";
+                        sf.InitialDirectory = MainController.Get().Configuration.InitialFileDirectory;
+                        if (sf.ShowDialog() == DialogResult.OK)
+                        {
+                            ImportFile(of.FileName, sf.FileName);
+                        }
+                    }
+                }
             }
         }
 
@@ -961,6 +1147,8 @@ namespace WolvenKit
 
         private void frmMain_Shown(object sender, EventArgs e)
         {
+            ResetWindows();
+            Task.Factory.StartNew(() => MainController.Get().Initialize()); //Start the async task to load our stuff
             var config = MainController.Get().Configuration;
             Size = config.MainSize;
             Location = config.MainLocation;
@@ -975,7 +1163,16 @@ namespace WolvenKit
             {
                 // ignored
             }
+
+            if (!string.IsNullOrEmpty(MainController.Get().InitialModProject))
+                openMod(MainController.Get().InitialModProject);
+            if (!string.IsNullOrEmpty(MainController.Get().InitialWKP))
+            {
+                using (var pi = new frmInstallPackage(MainController.Get().InitialWKP))
+                    pi.ShowDialog();
+            }
         }
+
 
         private void addFileToolStripMenuItem_Click(object sender, EventArgs e)
         {
@@ -1134,8 +1331,13 @@ namespace WolvenKit
             }
 
             if (Exit)
+            {
+                Visible = false;
                 Close();
+            }
+            AutoUpdater.Start("https://raw.githubusercontent.com/Traderain/Wolven-kit/master/Update.xml");
         }
+
 
         private void tbtNewMod_Click(object sender, EventArgs e)
         {
@@ -1243,12 +1445,6 @@ namespace WolvenKit
         {
             if (MessageBox.Show(@"Are you sure you would like to join the modding discord?", @"Confirmation", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 Process.Start("https://discord.gg/qBNgDEX");
-        }
-
-        private void wcclitePatcherToolStripMenuItem_Click(object sender, EventArgs e)
-        {
-            using (var pw = new frmWCCPatch())
-                pw.ShowDialog();
         }
 
         private void OutputToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1370,6 +1566,20 @@ namespace WolvenKit
             }
         }
 
+        private void renderW2meshToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (bool.Parse(renderW2meshToolStripMenuItem.Tag.ToString()))
+            {
+                renderW2meshToolStripMenuItem.Tag = false;
+                renderW2meshToolStripMenuItem.Image = Properties.Resources.ui_check_box_uncheck;
+            }
+            else
+            {
+                renderW2meshToolStripMenuItem.Tag = true;
+                renderW2meshToolStripMenuItem.Image = Properties.Resources.ui_check_box;
+            }
+        }
+
         private void RecordStepsToReproduceBugToolStripMenuItem_Click(object sender, EventArgs e)
         {
             if (MessageBox.Show(@"This will launch an app that will help you record the steps needed to reproduce the bug/problem.
@@ -1435,6 +1645,8 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
                 var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
 
+                //------------------------PRE COOKING-------------------------------------//
+
                 //Handle strings.
                 if (packsettings.Strings)
                 {
@@ -1454,10 +1666,22 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                     await PackBundles();
                 }
 
+                //------------------------- COOKING -------------------------------------//
+
+                //Cook the mod
+                await CookMod();
+
+                //------------------------POST COOKING------------------------------------//
+
+                //Generate collision cache
+                if (packsettings.GenCollCache)
+                {
+                    await GenerateCollisionCache();
+                }
+
                 //Handle texture caching
                 if (packsettings.GenTexCache)
                 {
-                    await CookMod();
                     await PackTextures();
                 }
 
@@ -1480,7 +1704,7 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                             .ToList(), Path.Combine(DlcpackDir, @"soundspc.cache"));
                 }
 
-                //Handle scripts
+                //Handle mod scripts
                 if (Directory.Exists((ActiveMod.ModDirectory + "\\scripts")) && Directory.GetFiles((ActiveMod.ModDirectory + "\\scripts")).Any())
                 {
                     if (!Directory.Exists(Path.Combine(ActiveMod.ModDirectory, "scripts")))
@@ -1493,6 +1717,7 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                     });
                 }
 
+                //Handle the DLC scripts
                 if (Directory.Exists((ActiveMod.DlcDirectory + "\\scripts")) && Directory.GetFiles((ActiveMod.DlcDirectory + "\\scripts")).Any())
                 {
                     if (!Directory.Exists(Path.Combine(ActiveMod.DlcDirectory, "scripts")))
@@ -1505,6 +1730,7 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                     });
                 }
 
+                //Copy the generated w3strings
                 if (packsettings.Strings)
                 {
                     var files = Directory.GetFiles((ActiveMod.ProjectDirectory + "\\strings")).Where(s => Path.GetExtension(s) == ".w3strings").ToList();
@@ -1512,8 +1738,12 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                     files.ForEach(x => File.Copy(x, Path.Combine(DlcpackDir + Path.GetFileName(x))));
                     files.ForEach(x => File.Copy(x, Path.Combine(modpackDir, Path.GetFileName(x))));
                 }
+
+                //Install the mod
                 if(install)
                     InstallMod();
+
+                //Report that we are done
                 MainController.Get().ProjectStatus = install ? "Mod Packed&Installed" : "Mod packed!"; 
                 btPack.Enabled = true;
             }           
@@ -1861,6 +2091,100 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             {
                 AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
             }
+            #endregion
+        }
+
+        private async Task GenerateCollisionCache()
+        {
+                        var config = MainController.Get().Configuration;
+            var proc = new ProcessStartInfo(config.WccLite) { WorkingDirectory = Path.GetDirectoryName(config.WccLite) };
+            var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
+            var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+            var cookedModDir = Path.Combine(ActiveMod.ProjectDirectory, @"cooked\Mods\mod" + ActiveMod.Name + @"\content\");
+            var cookedDLCDir = Path.Combine(ActiveMod.ProjectDirectory, @"cooked\DLC\dlc" + ActiveMod.Name + @"\content\");
+            #region Mod texture caching
+            try
+            {
+                if (Directory.GetFiles(Path.Combine(ActiveMod.ModDirectory, new TextureCache().TypeName), "*", SearchOption.AllDirectories).Any())
+                {
+                    MainController.Get().ProjectStatus = "Generating collision cache";
+                    proc.Arguments = $"buildcache physics -basedir={Path.Combine(ActiveMod.ModDirectory, MainController.Get().TextureManager.TypeName)} -platform=pc -db={cookedModDir}\\cook.db  -out={modpackDir}\\collision.cache";
+                    proc.UseShellExecute = false;
+                    proc.RedirectStandardOutput = true;
+                    proc.WindowStyle = ProcessWindowStyle.Hidden;
+                    proc.CreateNoWindow = true;
+
+                    AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
+
+                    using (var process = Process.Start(proc))
+                    {
+                        using (var reader = process.StandardOutput)
+                        {
+                            while (true)
+                            {
+                                var result = await reader.ReadLineAsync();
+
+                                AddOutput(result + "\n", frmOutput.Logtype.Wcc);
+
+                                Application.DoEvents();
+
+                                if (reader.EndOfStream)
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (DirectoryNotFoundException)
+            {
+                AddOutput("Collision cache was not generated because mod was not cooked. \n", frmOutput.Logtype.Important);
+            }
+            catch (Exception ex)
+            {
+                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
+            }
+            #endregion
+            #region DLC texture caching
+            try
+            {
+                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new TextureCache().TypeName), "*", SearchOption.AllDirectories).Any())
+                {
+                    MainController.Get().ProjectStatus = "Generating DLC collision cache";
+                    proc.Arguments = $"buildcache physics -basedir={Path.Combine(ActiveMod.DlcDirectory, MainController.Get().TextureManager.TypeName)} -platform=pc -db={cookedDLCDir}\\cook.db  -out={DlcpackDir}\\collision.cache";
+                    proc.UseShellExecute = false;
+                    proc.RedirectStandardOutput = true;
+                    proc.WindowStyle = ProcessWindowStyle.Hidden;
+                    proc.CreateNoWindow = true;
+
+                    AddOutput("Executing " + proc.FileName + " " + proc.Arguments + "\n", frmOutput.Logtype.Important);
+
+                    using (var process = Process.Start(proc))
+                    {
+                        using (var reader = process.StandardOutput)
+                        {
+                            while (true)
+                            {
+                                var result = await reader.ReadLineAsync();
+
+                                AddOutput(result + "\n", frmOutput.Logtype.Wcc);
+
+                                Application.DoEvents();
+
+                                if (reader.EndOfStream)
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (DirectoryNotFoundException)
+            {
+                AddOutput("DLC wasn't cooked. Couldn't generate collision cache. \n", frmOutput.Logtype.Important);
+            }
+            catch (Exception ex)
+            {
+                AddOutput(ex.ToString() + "\n", frmOutput.Logtype.Error);
+            }            
             #endregion
         }
 
