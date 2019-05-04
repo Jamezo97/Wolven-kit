@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
@@ -16,6 +17,7 @@ using Dfust.Hotkeys;
 using ICSharpCode.SharpZipLib.Core;
 using ICSharpCode.SharpZipLib.Zip;
 using Newtonsoft.Json;
+using SharpPresence;
 using WeifenLuo.WinFormsUI.Docking;
 using WolvenKit.CR2W;
 using WolvenKit.CR2W.Types;
@@ -90,6 +92,7 @@ namespace WolvenKit
             hotkeys.RegisterHotkey(Keys.F1, HKHelp, "Help");
             hotkeys.RegisterHotkey(Keys.Control | Keys.C, HKCopy, "Copy");
             hotkeys.RegisterHotkey(Keys.Control | Keys.V, HKPaste,"Paste");            
+            MainController.Get().InitForm(this);
         }
 
         private delegate void strDelegate(string t);
@@ -290,6 +293,11 @@ namespace WolvenKit
                 XDocument installlog = new XDocument(new XElement("InstalLog", new XAttribute("Project", ActiveMod.Name), new XAttribute("Build_date", DateTime.Now.ToString())));
                 var fileroot = new XElement("Files");
                 //Copy and log the files.
+                if (!Directory.Exists(Path.Combine(ActiveMod.ProjectDirectory, "packed")))
+                {
+                    AddOutput("Failed to install the mod! The packed directory doesn't exist! You forgot to tick any of the packing options?",frmOutput.Logtype.Important);
+                    return;
+                }
                 fileroot.Add(Commonfunctions.DirectoryCopy(Path.Combine(ActiveMod.ProjectDirectory, "packed"), MainController.Get().Configuration.GameRootDir, true));
                 installlog.Root.Add(fileroot);
                 //Save the log.
@@ -531,10 +539,15 @@ namespace WolvenKit
 
         private void SaveMod()
         {
-            var ser = new XmlSerializer(typeof(W3Mod));
-            var modfile = new FileStream(ActiveMod.FileName, FileMode.Create, FileAccess.Write);
-            ser.Serialize(modfile, ActiveMod);
-            modfile.Close();
+            if (ActiveMod != null)
+            {
+                if(ActiveMod.LastOpenedFiles != null)
+                    ActiveMod.LastOpenedFiles = OpenDocuments.Select(x => x.File.FileName).ToList();
+                var ser = new XmlSerializer(typeof(W3Mod));
+                var modfile = new FileStream(ActiveMod.FileName, FileMode.Create, FileAccess.Write);
+                ser.Serialize(modfile, ActiveMod);
+                modfile.Close();
+            }
         }
 
         public IDockContent DeserializeDockContent(string persistString)
@@ -626,6 +639,17 @@ namespace WolvenKit
             catch (Exception ex)
             {
                 MessageBox.Show("Failed to upgrade the project!\n" + ex,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error);
+            }
+
+            if (ActiveMod?.LastOpenedFiles != null)
+            {
+                foreach (var doc in ActiveMod.LastOpenedFiles)
+                {
+                    if (File.Exists(doc))
+                    {
+                        LoadDocument(doc);
+                    }
+                }
             }
         }
 
@@ -1024,11 +1048,60 @@ namespace WolvenKit
         #endregion //Methods
 
         #region  Control events
+        private void richpresenceworker_DoWork(object sender, System.ComponentModel.DoWorkEventArgs e)
+        {
+            string project = "non";
+
+            Discord.EventHandlers handlers = new Discord.EventHandlers();
+            Discord.Initialize("482179494862651402", handlers);
+            while (!richpresenceworker.CancellationPending)
+            {
+                Thread.Sleep(1000); 
+                if (MainController.Get().ActiveMod != null)
+                {
+                    if (project != MainController.Get().ActiveMod.Name.ToString())
+                    {
+                        project = MainController.Get().ActiveMod.Name.ToString();
+                        Discord.RichPresence rp = new Discord.RichPresence();
+                        rp.state = "";
+                        rp.details = "Developing " + project;
+                        rp.largeImageKey = "logo_wkit";
+                        Discord.UpdatePresence(rp);
+                    }
+                }
+            }
+        }
+
+        public EventHandler errored;
+
+        private void richpresenceworker_ProgressChanged(object sender, System.ComponentModel.ProgressChangedEventArgs e)
+        {
+
+        }
+
+        private void richpresenceworker_RunWorkerCompleted(object sender, System.ComponentModel.RunWorkerCompletedEventArgs e)
+        {
+
+        }
+
         private void frmMain_MdiChildActivate(object sender, EventArgs e)
         {
             if (sender is frmCR2WDocument)
             {
                 doc_Activated(sender, e);
+            }
+        }
+
+        private void exportToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            using (var sf = new SaveFileDialog())
+            {
+                sf.Title = "Please select a location to save the json dump of the cr2w file";
+                sf.Filter = "JSON Files | *.json";
+                if (sf.ShowDialog() == DialogResult.OK)
+                {
+                    throw new NotImplementedException("TODO");
+                }
             }
         }
 
@@ -1126,10 +1199,12 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
 
         private void frmMain_FormClosing(object sender, FormClosingEventArgs e)
         {
+            richpresenceworker.CancelAsync();           
             if (MainController.Get().ProjectUnsaved)
                 if (MessageBox.Show("There are unsaved changes in your project. Would you like to save them?", "WolvenKit", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                     saveAllFiles();
 
+            SaveMod();
         }
 
         private void frmMain_FormClosed(object sender, FormClosedEventArgs e)
@@ -1148,7 +1223,6 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
         private void frmMain_Shown(object sender, EventArgs e)
         {
             ResetWindows();
-            Task.Factory.StartNew(() => MainController.Get().Initialize()); //Start the async task to load our stuff
             var config = MainController.Get().Configuration;
             Size = config.MainSize;
             Location = config.MainLocation;
@@ -1317,6 +1391,7 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
 
         private void frmMain_Load(object sender, EventArgs e)
         {
+            //Load/Setup the config
             var Exit = false;
             while (!File.Exists(MainController.Get().Configuration.ExecutablePath))
             {
@@ -1335,7 +1410,14 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
                 Visible = false;
                 Close();
             }
+
+            //Start loading if everything is set up.
+            var frmload = new frmLoading();
+            frmload.ShowDialog();
+            
+            //Update check should be after we are all set up. It goes on in the background.
             AutoUpdater.Start("https://raw.githubusercontent.com/Traderain/Wolven-kit/master/Update.xml");
+            richpresenceworker.RunWorkerAsync();
         }
 
 
@@ -1368,17 +1450,25 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
                 {
                     if (oldmod.Name != dlg.Mod.Name)
                     {
-                        MainController.Get()?.Window?.ModExplorer?.StopMonitoringDirectory();
-                        //Close all docs so they won't cause problems
-                        OpenDocuments.ForEach(x => x.Close());
-                        //Move the files directory
-                        Directory.Move(oldmod.ProjectDirectory, Path.Combine(Path.GetDirectoryName(oldmod.ProjectDirectory), dlg.Mod.Name));
-                        //Delete the old directory
-                        if (Directory.Exists(oldmod.ProjectDirectory))
-                            Commonfunctions.DeleteFilesAndFoldersRecursively(oldmod.ProjectDirectory);
-                        //Delete the old mod project file
-                        if (File.Exists(oldmod.FileName))
-                            File.Delete(oldmod.FileName);
+                        try
+                        {
+                            MainController.Get()?.Window?.ModExplorer?.StopMonitoringDirectory();
+                            //Close all docs so they won't cause problems
+                            OpenDocuments.ForEach(x => x.Close());
+                            //Move the files directory
+                            Directory.Move(oldmod.ProjectDirectory, Path.Combine(Path.GetDirectoryName(oldmod.ProjectDirectory), dlg.Mod.Name));
+                            //Delete the old directory
+                            if (Directory.Exists(oldmod.ProjectDirectory))
+                                Commonfunctions.DeleteFilesAndFoldersRecursively(oldmod.ProjectDirectory);
+                            //Delete the old mod project file
+                            if (File.Exists(oldmod.FileName))
+                                File.Delete(oldmod.FileName);
+                        }
+                        catch (System.IO.IOException)
+                        {
+                            MessageBox.Show("Sorry but there already exist a folder/mod with that name.","Error",MessageBoxButtons.OK,MessageBoxIcon.Error);
+                            return;
+                        }
                     }
                     //Save the new settings and update the title
                     UpdateTitle();
@@ -1444,7 +1534,7 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
         private void joinOurDiscordToolStripMenuItem_Click_1(object sender, EventArgs e)
         {
             if (MessageBox.Show(@"Are you sure you would like to join the modding discord?", @"Confirmation", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                Process.Start("https://discord.gg/qBNgDEX");
+                Process.Start("https://discord.gg/KnPMmBz");
         }
 
         private void OutputToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1496,7 +1586,7 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
             if (ActiveMod == null)
                 return;
 
-            var scriptsdirectory = (ActiveMod.DlcDirectory + "\\scripts");
+            var scriptsdirectory = (ActiveMod.DlcDirectory + "\\scripts\\local");
             if (!Directory.Exists(scriptsdirectory))
             {
                 Directory.CreateDirectory(scriptsdirectory);
@@ -1520,7 +1610,7 @@ _col - for simple stuff like boxes and spheres","Information about importing mod
             if (ActiveMod == null)
                 return;
 
-            var scriptsdirectory = (ActiveMod.ModDirectory + "\\scripts");
+            var scriptsdirectory = (ActiveMod.ModDirectory + "\\scripts\\local");
             if (!Directory.Exists(scriptsdirectory))
             {
                 Directory.CreateDirectory(scriptsdirectory);
@@ -1641,9 +1731,12 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 ShowOutput();
                 ClearOutput();
                 saveAllFiles();
-
                 var modpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\Mods\mod" + ActiveMod.Name + @"\content\");
                 var DlcpackDir = Path.Combine(ActiveMod.ProjectDirectory, @"packed\DLC\dlc" + ActiveMod.Name + @"\content\");
+                
+                //Create the dirs. So script only mods don't die.
+                Directory.CreateDirectory(modpackDir);
+                Directory.CreateDirectory(DlcpackDir);
 
                 //------------------------PRE COOKING-------------------------------------//
 
@@ -1694,40 +1787,56 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
                 //Handle sound caching
                 if (packsettings.Sound)
                 {
-                    if (Directory.GetFiles(Path.Combine(ActiveMod.ModDirectory, MainController.Get().SoundManager.TypeName), "*.wem | *.bnk").Any())
-                        SoundCache.Write(Directory.EnumerateFiles(Path.Combine(ActiveMod.ModDirectory, MainController.Get().SoundManager.TypeName))
-                            .Where(file => file.ToLower().EndsWith("wem") || file.ToLower().EndsWith("bnk"))
-                            .ToList(), Path.Combine(modpackDir, @"soundspc.cache"));
-                    if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, MainController.Get().SoundManager.TypeName), "*.wem | *.bnk").Any())
-                        SoundCache.Write(Directory.EnumerateFiles(Path.Combine(ActiveMod.DlcDirectory, MainController.Get().SoundManager.TypeName))
-                            .Where(file => file.ToLower().EndsWith("wem") || file.ToLower().EndsWith("bnk"))
-                            .ToList(), Path.Combine(DlcpackDir, @"soundspc.cache"));
+                    if (new DirectoryInfo(Path.Combine(ActiveMod.ModDirectory, MainController.Get().SoundManager.TypeName)).GetFiles("*.*",SearchOption.AllDirectories).Where(file => file.Name.ToLower().EndsWith("wem") || file.Name.ToLower().EndsWith("bnk")).Any())
+                    {
+                        SoundCache.Write(new DirectoryInfo(Path.Combine(ActiveMod.ModDirectory, MainController.Get().SoundManager.TypeName)).GetFiles("*.*", SearchOption.AllDirectories).Where(file => file.Name.ToLower().EndsWith("wem") || file.Name.ToLower().EndsWith("bnk")).ToList().Select(x => x.FullName).ToList(), Path.Combine(modpackDir, @"soundspc.cache"));
+                        AddOutput("Mod soundcache generated!\n", frmOutput.Logtype.Important);
+                    }
+                    else
+                    {
+                        AddOutput("Mod soundcache wasn't generated!\n", frmOutput.Logtype.Important);
+                    }
+                    if (new DirectoryInfo(Path.Combine(ActiveMod.DlcDirectory, MainController.Get().SoundManager.TypeName)).GetFiles("*.*", SearchOption.AllDirectories).Where(file => file.Name.ToLower().EndsWith("wem") || file.Name.ToLower().EndsWith("bnk")).Any())
+                    {
+                        SoundCache.Write(new DirectoryInfo(Path.Combine(ActiveMod.DlcDirectory, MainController.Get().SoundManager.TypeName)).GetFiles("*.*", SearchOption.AllDirectories).Where(file => file.Name.ToLower().EndsWith("wem") || file.Name.ToLower().EndsWith("bnk")).ToList().Select(x => x.FullName).ToList(), Path.Combine(DlcpackDir, @"soundspc.cache"));
+                        AddOutput("DLC soundcache generated!\n", frmOutput.Logtype.Important);
+                    }
+                    else
+                    {
+                        AddOutput("DLC soundcache wasn't generated!\n", frmOutput.Logtype.Important);
+                    }
                 }
 
                 //Handle mod scripts
-                if (Directory.Exists((ActiveMod.ModDirectory + "\\scripts")) && Directory.GetFiles((ActiveMod.ModDirectory + "\\scripts")).Any())
+                if (Directory.Exists(Path.Combine(ActiveMod.ModDirectory, "scripts")) && Directory.GetFiles(Path.Combine(ActiveMod.ModDirectory, "scripts"),"*.*",SearchOption.AllDirectories).Any())
                 {
                     if (!Directory.Exists(Path.Combine(ActiveMod.ModDirectory, "scripts")))
                         Directory.CreateDirectory(Path.Combine(ActiveMod.ModDirectory, "scripts"));
-                    Directory.GetFiles((ActiveMod.ModDirectory + "\\scripts")).ToList().ForEach(x =>
-                    {
-                        var dest = Path.Combine(modpackDir, "scripts", Path.GetFileName(x));
-                        Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                        File.Copy(x, dest, true);
-                    });
+                    //Now Create all of the directories
+                    foreach (string dirPath in Directory.GetDirectories(Path.Combine(ActiveMod.ModDirectory, "scripts"), "*.*", 
+                        SearchOption.AllDirectories))
+                        Directory.CreateDirectory(dirPath.Replace(Path.Combine(ActiveMod.ModDirectory , "scripts"), Path.Combine(modpackDir, "scripts")));
+
+                    //Copy all the files & Replaces any files with the same name
+                    foreach (string newPath in Directory.GetFiles(Path.Combine(ActiveMod.ModDirectory , "scripts"), "*.*", 
+                        SearchOption.AllDirectories))
+                        File.Copy(newPath, newPath.Replace(Path.Combine(ActiveMod.ModDirectory, "scripts"), Path.Combine(modpackDir, "scripts")), true);
                 }
 
                 //Handle the DLC scripts
-                if (Directory.Exists((ActiveMod.DlcDirectory + "\\scripts")) && Directory.GetFiles((ActiveMod.DlcDirectory + "\\scripts")).Any())
+                if (Directory.Exists(Path.Combine(ActiveMod.DlcDirectory, "scripts")) && Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, "scripts"),"*.*",SearchOption.AllDirectories).Any())
                 {
                     if (!Directory.Exists(Path.Combine(ActiveMod.DlcDirectory, "scripts")))
                         Directory.CreateDirectory(Path.Combine(ActiveMod.DlcDirectory, "scripts"));
-                    Directory.GetFiles((ActiveMod.DlcDirectory + "\\scripts")).ToList().ForEach(x =>
-                    {
-                        var dest = Path.Combine(DlcpackDir, "scripts", Path.GetFileName(x));
-                        Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                        File.Copy(x, dest, true);
-                    });
+                    //Now Create all of the directories
+                    foreach (string dirPath in Directory.GetDirectories(Path.Combine(ActiveMod.DlcDirectory, "scripts"), "*.*", 
+                        SearchOption.AllDirectories))
+                        Directory.CreateDirectory(dirPath.Replace(Path.Combine(ActiveMod.DlcDirectory, "scripts"), Path.Combine(DlcpackDir, "scripts")));
+
+                    //Copy all the files & Replaces any files with the same name
+                    foreach (string newPath in Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, "scripts"), "*.*", 
+                        SearchOption.AllDirectories))
+                        File.Copy(newPath, newPath.Replace(Path.Combine(ActiveMod.DlcDirectory, "scripts"), Path.Combine(DlcpackDir, "scripts")), true);
                 }
 
                 //Copy the generated w3strings
@@ -1981,7 +2090,8 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             #region Cook Mod
             try
             {
-                if (Directory.GetFiles(Path.Combine(ActiveMod.ModDirectory, new TextureCache().TypeName), "*", SearchOption.AllDirectories).Any())
+                var modtexcachedir = Path.Combine(ActiveMod.ModDirectory, MainController.Get().TextureManager.TypeName);
+                if (Directory.Exists(modtexcachedir) && Directory.GetFiles(modtexcachedir, "*", SearchOption.AllDirectories).Any())
                 {
                     MainController.Get().ProjectStatus = "Cooking mod";
                     proc.Arguments = $"cook -platform=pc -mod={Path.Combine(ActiveMod.ModDirectory, MainController.Get().TextureManager.TypeName)} -basedir={Path.Combine(ActiveMod.ModDirectory, MainController.Get().TextureManager.TypeName)}  -outdir={cookedModDir}";
@@ -2038,7 +2148,8 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             #region Cook DLC
             try
             {
-                if (Directory.GetFiles(Path.Combine(ActiveMod.DlcDirectory, new TextureCache().TypeName), "*", SearchOption.AllDirectories).Any())
+                var dlctxcachedir = Path.Combine(ActiveMod.DlcDirectory, MainController.Get().TextureManager.TypeName);
+                if (Directory.Exists(dlctxcachedir) && Directory.GetFiles(dlctxcachedir, "*", SearchOption.AllDirectories).Any())
                 {
                     MainController.Get().ProjectStatus = "Cooking DLC";
                     proc.Arguments = $"cook -platform=pc -mod={Path.Combine(ActiveMod.DlcDirectory, MainController.Get().TextureManager.TypeName)} -basedir={Path.Combine(ActiveMod.DlcDirectory, MainController.Get().TextureManager.TypeName)}  -outdir={cookedDLCDir}";
@@ -2282,5 +2393,50 @@ Would you like to open the problem steps recorder?", "Bug reporting", MessageBox
             #endregion
         }
         #endregion // Mod Pack
+
+        private void wwiseSoundbankToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void ModWwiseNew_Click(object sender, EventArgs e)
+        {
+            using (var of = new OpenFileDialog())
+            {
+                of.Multiselect = true;
+                of.Filter = "Wwise files | *.wem;*.bnk";
+                of.Title = "Please select the wwise bank and sound files for importing them into your mod";
+                if(of.ShowDialog() == DialogResult.OK)
+                {
+                    foreach (var f in of.FileNames)
+                    {
+                        var newfilepath = Path.Combine(ActiveMod.ModDirectory, new SoundManager().TypeName, Path.GetFileName(f));
+                        //Create the directory because it will crash if it doesn't exist.
+                        Directory.CreateDirectory(Path.GetDirectoryName(newfilepath));
+                        File.Copy(f, newfilepath, true);
+                    }
+                }
+            }
+        }
+
+        private void DLCWwise_Click(object sender, EventArgs e)
+        {
+            using (var of = new OpenFileDialog())
+            {
+                of.Multiselect = true;
+                of.Filter = "Wwise files | *.wem;*.bnk";
+                of.Title = "Please select the wwise bank and sound files for importing them into your DLC";
+                if (of.ShowDialog() == DialogResult.OK)
+                {
+                    foreach (var f in of.FileNames)
+                    {
+                        var newfilepath = Path.Combine(ActiveMod.DlcDirectory, new SoundManager().TypeName,"dlc", ActiveMod.Name, Path.GetFileName(f));
+                        //Create the directory because it will crash if it doesn't exist.
+                        Directory.CreateDirectory(Path.GetDirectoryName(newfilepath));
+                        File.Copy(f, newfilepath, true);
+                    }
+                }
+            }
+        }
     }
 }
